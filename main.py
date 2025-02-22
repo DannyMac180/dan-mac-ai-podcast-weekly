@@ -170,6 +170,27 @@ Here are the episodes:
         print("\n=== Generated Newsletter ===\n")
         print(newsletter)
         print("\n=========================\n")
+        
+        # Generate title using Gemini
+        title_prompt = f"""Generate a single, concise title (max 100 characters) that captures the main themes of this newsletter. Do not provide multiple options or any explanation - just output the title:
+
+{newsletter}"""
+        title = call_llm(title_prompt).strip()
+        
+        # Format date and create filename
+        current_date = datetime.now().strftime("%Y-%d-%m")
+        filename = f"{current_date} {title}.md"
+        
+        # Save to Obsidian vault
+        obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
+        os.makedirs(obsidian_path, exist_ok=True)
+        
+        full_path = os.path.join(obsidian_path, filename)
+        with open(full_path, 'w') as f:
+            f.write(newsletter)
+            
+        print(f"\nNewsletter saved to: {full_path}")
+        
     except Exception as e:
         print(f"Error generating newsletter: {e}")
 
