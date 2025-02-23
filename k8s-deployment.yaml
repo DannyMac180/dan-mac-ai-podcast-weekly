@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podcast-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podcast
+  template:
+    metadata:
+      labels:
+        app: podcast
+    spec:
+      containers:
+        - name: podcast-container
+          image: dan-mac-ai-podcast-weekly:latest
+          ports:
+            - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: podcast-service
+spec:
+  selector:
+    app: podcast
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
