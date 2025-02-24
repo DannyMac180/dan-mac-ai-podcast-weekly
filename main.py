@@ -23,6 +23,7 @@ def call_llm(prompt: str, model: str = "google/gemini-2.0-flash-001") -> str:
     Returns:
         The model's response as a string
     """
+    print("Step 2: Starting call_llm")
     try:
         response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
@@ -41,7 +42,9 @@ def call_llm(prompt: str, model: str = "google/gemini-2.0-flash-001") -> str:
             }
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        result = response.json()["choices"][0]["message"]["content"]
+        print("Step 3: Finished call_llm")
+        return result
     except Exception as e:
         print(f"Error calling LLM: {e}")
         return ""
@@ -215,4 +218,5 @@ def main():
     generate_newsletter(extracts)
 
 if __name__ == '__main__':
+    print("Step 1: Starting script")
     main()
