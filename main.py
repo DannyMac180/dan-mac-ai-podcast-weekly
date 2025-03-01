@@ -71,7 +71,7 @@ def call_llm_with_models(request: LLMRequest) -> LLMResponse:
             logfire.log("info", "llm_request", 
                        {"model": request.model,
                        "prompt_length": len(request.prompt),
-                       "prompt_first_100_chars": request.prompt[:100] + "..." if len(request.prompt) > 100 else request.prompt})
+                       "prompt_content": request.prompt})
             
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
@@ -104,7 +104,7 @@ def call_llm_with_models(request: LLMRequest) -> LLMResponse:
                       {"model": request.model,
                       "status": "success",
                       "response_length": len(result),
-                      "response_first_100_chars": result[:100] + "..." if len(result) > 100 else result,
+                      "response_content": result,
                       "processing_time_ms": processing_time})
             
             llm_response = LLMResponse(
@@ -313,7 +313,7 @@ Here are the episodes to analyze:
         except json.JSONDecodeError as e:
             logfire.log("error", "json_parse_error", 
                       {"error_message": str(e), 
-                      "raw_response_preview": llm_response.content[:100]})
+                      "raw_response": llm_response.content})
             print(f"Error finding connections: {e}")
             print(f"Raw LLM response: {llm_response.content}")
             # Return extracts without connections if there's an error
@@ -356,79 +356,88 @@ Here are the episodes:
 {all_extracts_with_connections}
 """
         try:
-            # Use the enhanced model-based approach
-            llm_request = LLMRequest(
-                model="openai/gpt-4o",
-                prompt=prompt,
-                context_info="generate_newsletter"
-            )
-            
-            span.event("newsletter_generation_started")
-            llm_response = call_llm_with_models(llm_request)
-            
-            if not llm_response.success:
-                logfire.log("error", "newsletter_generation_failed", 
-                          {"reason": "llm_error", 
-                          "error": llm_response.error_message})
-                return None
+            # Generate the newsletter
+            with logfire.span("generate_newsletter_content") as span:
+                logfire.log("info", "newsletter_generation_started")
                 
-            newsletter = llm_response.content
-            
-            logfire.log("info", "newsletter_generated", 
-                      {"length": len(newsletter),
-                      "word_count": len(newsletter.split())})
-                      
-            print("\n=== Generated Newsletter ===\n")
-            print(newsletter)
-            print("\n=========================\n")
-            
-            # Generate title using Gemini
-            title_prompt = f"""Generate a single, concise title (max 100 characters) that captures the main themes of this newsletter. Do not provide multiple options or any explanation - just output the title:
+                # Call the LLM to generate the newsletter
+                llm_request = LLMRequest(
+                    model="openai/gpt-4o",
+                    prompt=prompt,
+                    context_info="generate_newsletter"
+                )
+                
+                llm_response = call_llm_with_models(llm_request)
+                
+                if not llm_response.success:
+                    logfire.log("error", "newsletter_generation_failed", 
+                              {"reason": "llm_error", 
+                              "error": llm_response.error_message})
+                    return None
+                    
+                newsletter = llm_response.content
+                
+                logfire.log("info", "newsletter_generated", 
+                          {"length": len(newsletter),
+                          "word_count": len(newsletter.split()),
+                          "content": newsletter})
+                          
+                print("\n=== Generated Newsletter ===\n")
+                print(newsletter)
+                print("\n=========================\n")
+                
+                # Generate title using Gemini
+                title_prompt = f"""Generate a single, concise title (max 100 characters) that captures the main themes of this newsletter. Do not provide multiple options or any explanation - just output the title:
 
 {newsletter}"""
-            title_request = LLMRequest(
-                model="google/gemini-2.0-flash-001",
-                prompt=title_prompt,
-                context_info="generate_title"
-            )
-            
-            span.event("title_generation_started")
-            title_response = call_llm_with_models(title_request)
-            
-            if not title_response.success:
-                logfire.log("error", "title_generation_failed", 
-                          {"reason": "llm_error", 
-                          "error": title_response.error_message})
-                title = "AI Podcast Weekly Newsletter"
-            else:
-                title = title_response.content.strip()
-                logfire.log("info", "title_generated", {"title": title})
-            
-            # Format date and create filename
-            current_date = datetime.now().strftime("%Y-%d-%m")
-            filename = f"{current_date} {title}.md"
-            
-            # Save to Obsidian vault
-            obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
-            os.makedirs(obsidian_path, exist_ok=True)
-            
-            full_path = os.path.join(obsidian_path, filename)
-            with open(full_path, 'w') as f:
-                f.write(newsletter)
-                
-            logfire.log("info", "newsletter_saved", 
-                      {"file_path": full_path,
-                      "file_name": filename})
-                
-            print(f"\nNewsletter saved to: {full_path}")
-            
-            # Return dictionary with metadata for main span
-            return {
-                "title": title,
-                "content": newsletter,
-                "file_path": full_path
-            }
-            
+                with logfire.span("generate_title") as span:
+                    logfire.log("info", "title_generation_started")
+                    
+                    title_request = LLMRequest(
+                        model="google/gemini-2.0-flash-001",
+                        prompt=title_prompt,
+                        context_info="generate_title"
+                    )
+                    
+                    title_response = call_llm_with_models(title_request)
+                    
+                    if not title_response.success:
+                        logfire.log("error", "title_generation_failed", 
+                                  {"reason": "llm_error", 
+                                  "error": title_response.error_message})
+                        title = "AI Podcast Weekly Newsletter"
+                    else:
+                        title = title_response.content.strip()
+                        logfire.log("info", "title_generated", {
+                            "title": title,
+                            "raw_response": title_response.content
+                        })
+                    
+                    # Format date and create filename
+                    current_date = datetime.now().strftime("%Y-%d-%m")
+                    filename = f"{current_date} {title}.md"
+                    
+                    # Save to Obsidian vault
+                    obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
+                    os.makedirs(obsidian_path, exist_ok=True)
+                    
+                    full_path = os.path.join(obsidian_path, filename)
+                    with open(full_path, 'w') as f:
+                        f.write(newsletter)
+                        
+                    logfire.log("info", "newsletter_saved", 
+                              {"file_path": full_path,
+                              "file_name": filename})
+                        
+                    print(f"\nNewsletter saved to: {full_path}")
+                    
+                    # Return dictionary with metadata for main span
+                    return {
+                        "title": title,
+                        "content": newsletter,
+                        "file_path": full_path
+                    }
+                    
         except Exception as e:
             logfire.log("error", "newsletter_error", 
                       {"error_type": type(e).__name__, 
