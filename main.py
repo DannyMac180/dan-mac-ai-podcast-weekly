@@ -330,8 +330,8 @@ Here are the episodes to analyze:
                 extract['connections'] = []
             return valid_extracts
 
-def generate_newsletter(extracts):
-    with logfire.span("generate_newsletter", extract_count=len(extracts)) as span:
+def generate_newsletter(extracts, num_drafts=5):
+    with logfire.span("generate_newsletter", extract_count=len(extracts), num_drafts=num_drafts) as span:
         if not extracts:
             logfire.log("info", "no_extracts")
             print("No extracts available to generate newsletter")
@@ -352,98 +352,335 @@ Structure the newsletter with:
 3. A section on common themes and connections
 4. A conclusion that ties everything together
 
+Create {num_drafts} DISTINCT drafts with different styles and approaches. Each draft should have its own unique voice and structure while covering the same content.
+
 Here are the episodes:
 {all_extracts_with_connections}
 """
         try:
-            # Generate the newsletter
-            with logfire.span("generate_newsletter_content") as span:
-                logfire.log("info", "newsletter_generation_started")
+            # Generate the newsletter drafts
+            with logfire.span("generate_newsletter_drafts") as span:
+                logfire.log("info", "newsletter_drafts_generation_started", {"num_drafts": num_drafts})
                 
-                # Call the LLM to generate the newsletter
+                # Call the LLM to generate the newsletter drafts
                 llm_request = LLMRequest(
                     model="openai/gpt-4o",
                     prompt=prompt,
-                    context_info="generate_newsletter"
+                    context_info="generate_newsletter_drafts"
                 )
                 
                 llm_response = call_llm_with_models(llm_request)
                 
                 if not llm_response.success:
-                    logfire.log("error", "newsletter_generation_failed", 
+                    logfire.log("error", "newsletter_drafts_generation_failed", 
                               {"reason": "llm_error", 
                               "error": llm_response.error_message})
                     return None
                     
-                newsletter = llm_response.content
+                newsletter_content = llm_response.content
                 
-                logfire.log("info", "newsletter_generated", 
-                          {"length": len(newsletter),
-                          "word_count": len(newsletter.split()),
-                          "content": newsletter})
-                          
-                print("\n=== Generated Newsletter ===\n")
-                print(newsletter)
-                print("\n=========================\n")
+                # Split the content into separate drafts
+                # We'll look for patterns like "Draft 1:", "Draft 2:", etc.
+                import re
+                draft_pattern = r"(?:Draft\s*(\d+)|Newsletter\s*(\d+))[\s:]*"
                 
-                # Generate title using Gemini
-                title_prompt = f"""Generate a single, concise title (max 100 characters) that captures the main themes of this newsletter. Do not provide multiple options or any explanation - just output the title:
+                # Find all draft markers
+                draft_markers = list(re.finditer(draft_pattern, newsletter_content, re.IGNORECASE))
+                
+                # If we didn't find any markers, try to split by markdown headers
+                if len(draft_markers) < 2:
+                    draft_markers = list(re.finditer(r"(?:^|\n)#{1,3}\s*(?:Draft|Newsletter)\s*\d+", newsletter_content, re.IGNORECASE))
+                
+                # If we still don't have markers, assume the model didn't format with explicit markers
+                # and just split the content into roughly equal parts
+                drafts = []
+                if len(draft_markers) < 2:
+                    logfire.log("info", "no_draft_markers_found", {"fallback": "single_draft"})
+                    drafts = [newsletter_content]
+                else:
+                    # Extract each draft based on the markers
+                    for i in range(len(draft_markers)):
+                        start_pos = draft_markers[i].start()
+                        end_pos = draft_markers[i+1].start() if i < len(draft_markers) - 1 else len(newsletter_content)
+                        draft_content = newsletter_content[start_pos:end_pos].strip()
+                        drafts.append(draft_content)
+                
+                # If we somehow didn't get enough drafts, log it but continue with what we have
+                if len(drafts) < num_drafts:
+                    logfire.log("warning", "fewer_drafts_than_requested", 
+                              {"requested": num_drafts, "received": len(drafts)})
+                
+                logfire.log("info", "newsletter_drafts_generated", 
+                          {"num_drafts": len(drafts),
+                          "total_length": len(newsletter_content),
+                          "content": newsletter_content})
+                
+                print(f"\n=== Generated {len(drafts)} Newsletter Drafts ===\n")
+                for i, draft in enumerate(drafts):
+                    print(f"\n--- Draft {i+1} ---\n")
+                    print(draft)
+                    print("\n-----------------\n")
+                
+                # Generate titles for each draft and evaluate them
+                draft_results = []
+                current_date = datetime.now().strftime("%Y-%d-%m")
+                
+                for i, draft in enumerate(drafts):
+                    # Generate title using Gemini
+                    title_prompt = f"""Generate a single, concise title (max 100 characters) that captures the main themes of this newsletter draft. Do not provide multiple options or any explanation - just output the title:
 
-{newsletter}"""
-                with logfire.span("generate_title") as span:
-                    logfire.log("info", "title_generation_started")
-                    
-                    title_request = LLMRequest(
-                        model="google/gemini-2.0-flash-001",
-                        prompt=title_prompt,
-                        context_info="generate_title"
-                    )
-                    
-                    title_response = call_llm_with_models(title_request)
-                    
-                    if not title_response.success:
-                        logfire.log("error", "title_generation_failed", 
-                                  {"reason": "llm_error", 
-                                  "error": title_response.error_message})
-                        title = "AI Podcast Weekly Newsletter"
-                    else:
-                        title = title_response.content.strip()
-                        logfire.log("info", "title_generated", {
+{draft}"""
+                    with logfire.span("generate_title", draft_number=i+1) as title_span:
+                        logfire.log("info", "title_generation_started", {"draft_number": i+1})
+                        
+                        title_request = LLMRequest(
+                            model="google/gemini-2.0-flash-001",
+                            prompt=title_prompt,
+                            context_info=f"generate_title_draft_{i+1}"
+                        )
+                        
+                        title_response = call_llm_with_models(title_request)
+                        
+                        if not title_response.success:
+                            logfire.log("error", "title_generation_failed", 
+                                      {"reason": "llm_error", 
+                                      "error": title_response.error_message,
+                                      "draft_number": i+1})
+                            title = f"AI Podcast Weekly Newsletter - Draft {i+1}"
+                        else:
+                            title = title_response.content.strip()
+                            logfire.log("info", "title_generated", {
+                                "title": title,
+                                "draft_number": i+1,
+                                "raw_response": title_response.content
+                            })
+                        
+                        # Evaluate the draft
+                        print(f"\nEvaluating Draft {i+1}...")
+                        evaluation_result = evaluate_draft(draft, i+1)
+                        
+                        if evaluation_result["success"]:
+                            evaluation = evaluation_result["evaluation"]
+                            
+                            # Print evaluation results
+                            print(f"\n--- Draft {i+1} Evaluation ---")
+                            print(f"Overall Score: {evaluation.get('overall_score', 'N/A')}/10")
+                            print(f"Insightfulness: {evaluation.get('insightfulness', {}).get('score', 'N/A')}/10")
+                            print(f"Brevity: {evaluation.get('brevity', {}).get('score', 'N/A')}/10")
+                            print(f"Humanity: {evaluation.get('humanity', {}).get('score', 'N/A')}/10")
+                            print(f"Conciseness: {evaluation.get('conciseness', {}).get('score', 'N/A')}/10")
+                            print(f"Interestingness: {evaluation.get('interestingness', {}).get('score', 'N/A')}/10")
+                            print(f"Summary: {evaluation.get('summary', 'No summary available')}")
+                            print("-------------------------")
+                        else:
+                            print(f"Failed to evaluate Draft {i+1}: {evaluation_result.get('error', 'Unknown error')}")
+                        
+                        # Format filename with evaluation score if available
+                        score_suffix = f" (Score: {evaluation_result.get('evaluation', {}).get('overall_score', 'N/A')}/10)" if evaluation_result["success"] else ""
+                        filename = f"{current_date} {title} - Draft {i+1}{score_suffix}.md"
+                        
+                        # Save to Obsidian vault
+                        obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
+                        os.makedirs(obsidian_path, exist_ok=True)
+                        
+                        # Add evaluation results to the draft content if available
+                        content_to_save = draft
+                        if evaluation_result["success"]:
+                            evaluation = evaluation_result["evaluation"]
+                            evaluation_text = f"""
+---
+## Draft Evaluation
+- **Overall Score**: {evaluation.get('overall_score', 'N/A')}/10
+- **Insightfulness**: {evaluation.get('insightfulness', {}).get('score', 'N/A')}/10 - {evaluation.get('insightfulness', {}).get('explanation', 'No explanation')}
+- **Brevity**: {evaluation.get('brevity', {}).get('score', 'N/A')}/10 - {evaluation.get('brevity', {}).get('explanation', 'No explanation')}
+- **Humanity**: {evaluation.get('humanity', {}).get('score', 'N/A')}/10 - {evaluation.get('humanity', {}).get('explanation', 'No explanation')}
+- **Conciseness**: {evaluation.get('conciseness', {}).get('score', 'N/A')}/10 - {evaluation.get('conciseness', {}).get('explanation', 'No explanation')}
+- **Interestingness**: {evaluation.get('interestingness', {}).get('score', 'N/A')}/10 - {evaluation.get('interestingness', {}).get('explanation', 'No explanation')}
+- **Summary**: {evaluation.get('summary', 'No summary available')}
+---
+
+"""
+                            content_to_save = f"{content_to_save}\n\n{evaluation_text}"
+                        
+                        full_path = os.path.join(obsidian_path, filename)
+                        with open(full_path, 'w') as f:
+                            f.write(content_to_save)
+                            
+                        logfire.log("info", "newsletter_draft_saved", 
+                                  {"file_path": full_path,
+                                  "file_name": filename,
+                                  "draft_number": i+1,
+                                  "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None})
+                            
+                        print(f"\nNewsletter Draft {i+1} saved to: {full_path}")
+                        
+                        # Add to results
+                        draft_results.append({
+                            "draft_number": i+1,
                             "title": title,
-                            "raw_response": title_response.content
+                            "content": draft,
+                            "file_path": full_path,
+                            "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None
                         })
-                    
-                    # Format date and create filename
-                    current_date = datetime.now().strftime("%Y-%d-%m")
-                    filename = f"{current_date} {title}.md"
-                    
-                    # Save to Obsidian vault
-                    obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
-                    os.makedirs(obsidian_path, exist_ok=True)
-                    
-                    full_path = os.path.join(obsidian_path, filename)
-                    with open(full_path, 'w') as f:
-                        f.write(newsletter)
-                        
-                    logfire.log("info", "newsletter_saved", 
-                              {"file_path": full_path,
-                              "file_name": filename})
-                        
-                    print(f"\nNewsletter saved to: {full_path}")
-                    
-                    # Return dictionary with metadata for main span
-                    return {
-                        "title": title,
-                        "content": newsletter,
-                        "file_path": full_path
-                    }
-                    
+                
+                # Sort drafts by evaluation score if available
+                sorted_drafts = sorted(
+                    draft_results, 
+                    key=lambda x: x.get("evaluation", {}).get("overall_score", 0) if x.get("evaluation") else 0, 
+                    reverse=True
+                )
+                
+                # Print the ranking of drafts
+                print("\n=== Draft Rankings ===")
+                for i, draft in enumerate(sorted_drafts):
+                    score = draft.get("evaluation", {}).get("overall_score", "N/A") if draft.get("evaluation") else "N/A"
+                    print(f"{i+1}. Draft {draft['draft_number']} - Score: {score}/10 - {draft['title']}")
+                
+                # Return dictionary with metadata for main span
+                return {
+                    "drafts": draft_results,
+                    "total_drafts": len(draft_results),
+                    "sorted_drafts": sorted_drafts
+                }
+        
         except Exception as e:
             logfire.log("error", "newsletter_error", 
                       {"error_type": type(e).__name__, 
                       "error_message": str(e)})
             print(f"Error generating newsletter: {e}")
             return None
+
+def evaluate_draft(draft_content, draft_number):
+    """
+    Evaluate a newsletter draft using Google's Gemini 2 Flash.
+    
+    Args:
+        draft_content: The content of the draft to evaluate
+        draft_number: The number of the draft for logging purposes
+        
+    Returns:
+        A dictionary with scores and feedback
+    """
+    with logfire.span("evaluate_draft", draft_number=draft_number) as span:
+        logfire.log("info", "draft_evaluation_started", {"draft_number": draft_number})
+        
+        # Create the evaluation prompt
+        evaluation_prompt = f"""
+Evaluate this newsletter draft and provide a numeric score (1-10) for each of these criteria:
+
+1. Insightfulness: Does it provide deep, thoughtful analysis and connections?
+2. Brevity: Is it concise without unnecessary words?
+3. Humanity: Does it feel like it was written by a human with personality?
+4. Conciseness: Is it focused and to the point?
+5. Interestingness: Is it engaging and captivating to read?
+
+For each criterion, provide:
+- A numeric score (1-10)
+- A brief explanation (max 1 sentence)
+
+Return your evaluation in this exact JSON format:
+{{
+  "insightfulness": {{
+    "score": <1-10>,
+    "explanation": "<brief explanation>"
+  }},
+  "brevity": {{
+    "score": <1-10>,
+    "explanation": "<brief explanation>"
+  }},
+  "humanity": {{
+    "score": <1-10>,
+    "explanation": "<brief explanation>"
+  }},
+  "conciseness": {{
+    "score": <1-10>,
+    "explanation": "<brief explanation>"
+  }},
+  "interestingness": {{
+    "score": <1-10>,
+    "explanation": "<brief explanation>"
+  }},
+  "overall_score": <average of all scores>,
+  "summary": "<one sentence overall assessment>"
+}}
+
+Here's the newsletter draft to evaluate:
+
+{draft_content}
+"""
+        
+        # Call Gemini 2 Flash for evaluation
+        evaluation_request = LLMRequest(
+            model="google/gemini-2.0-flash-thinking",
+            prompt=evaluation_prompt,
+            context_info=f"evaluate_draft_{draft_number}"
+        )
+        
+        evaluation_response = call_llm_with_models(evaluation_request)
+        
+        if not evaluation_response.success:
+            logfire.log("error", "draft_evaluation_failed", 
+                      {"reason": "llm_error", 
+                      "error": evaluation_response.error_message,
+                      "draft_number": draft_number})
+            return {
+                "success": False,
+                "error": evaluation_response.error_message
+            }
+        
+        # Try to parse the JSON response
+        try:
+            import json
+            evaluation = json.loads(evaluation_response.content)
+            
+            # Log the evaluation results
+            logfire.log("info", "draft_evaluation_completed", 
+                      {"draft_number": draft_number,
+                      "overall_score": evaluation.get("overall_score", 0),
+                      "scores": {
+                          "insightfulness": evaluation.get("insightfulness", {}).get("score", 0),
+                          "brevity": evaluation.get("brevity", {}).get("score", 0),
+                          "humanity": evaluation.get("humanity", {}).get("score", 0),
+                          "conciseness": evaluation.get("conciseness", {}).get("score", 0),
+                          "interestingness": evaluation.get("interestingness", {}).get("score", 0)
+                      }})
+            
+            return {
+                "success": True,
+                "evaluation": evaluation
+            }
+            
+        except json.JSONDecodeError as e:
+            logfire.log("error", "draft_evaluation_parse_failed", 
+                      {"reason": "json_parse_error", 
+                      "error": str(e),
+                      "raw_response": evaluation_response.content,
+                      "draft_number": draft_number})
+            
+            # If JSON parsing fails, try to extract scores using regex
+            import re
+            scores = {}
+            
+            # Try to find scores for each criterion
+            for criterion in ["insightfulness", "brevity", "humanity", "conciseness", "interestingness"]:
+                score_match = re.search(f"{criterion}.*?(\d+)[/\d]*", evaluation_response.content, re.IGNORECASE)
+                if score_match:
+                    scores[criterion] = int(score_match.group(1))
+                else:
+                    scores[criterion] = 5  # Default score if not found
+            
+            # Calculate overall score
+            overall_score = sum(scores.values()) / len(scores) if scores else 5
+            
+            return {
+                "success": True,
+                "evaluation": {
+                    **{k: {"score": v, "explanation": "Extracted from non-JSON response"} for k, v in scores.items()},
+                    "overall_score": overall_score,
+                    "summary": "Evaluation extracted from non-JSON response"
+                },
+                "raw_response": evaluation_response.content
+            }
 
 def retrieve_recent_markdown_files(vault_path: str):
     with logfire.span("retrieve_files", vault_path=vault_path) as span:
@@ -500,18 +737,18 @@ def main():
             logfire.log("info", "no_extracts_generated")
             print("No extracts generated from files.")
             return
-
+        
         logfire.log("info", "analyzing_connections", {"extract_count": len(extracts)})
         extracts = get_connections(extracts)
         
-        logfire.log("info", "generating_newsletter")
-        newsletter_result = generate_newsletter(extracts)
+        logfire.log("info", "generating_newsletter_drafts")
+        newsletter_results = generate_newsletter(extracts)
         
-        if newsletter_result:
+        if newsletter_results:
             logfire.log("info", "process_completed", 
-                           {"title": newsletter_result["title"],
-                           "newsletter_length": len(newsletter_result["content"]),
-                           "saved_to": newsletter_result["file_path"]})
+                       {"total_drafts": newsletter_results["total_drafts"],
+                        "drafts_info": [{"draft": d["draft_number"], "title": d["title"]} for d in newsletter_results["drafts"]]})
+            print(f"\nSuccessfully generated {newsletter_results['total_drafts']} newsletter drafts!")
         else:
             logfire.log("info", "process_failed", {"reason": "newsletter_generation_failed"})
 
