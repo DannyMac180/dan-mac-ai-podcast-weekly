@@ -423,7 +423,48 @@ Here are the episodes:
                 
                 # Generate titles for each draft and evaluate them
                 draft_results = []
-                current_date = datetime.now().strftime("%Y-%d-%m")
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                
+                # Define output directories - try multiple possible locations
+                possible_obsidian_paths = [
+                    '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts',
+                    '/Users/danielmcateer/Documents/Obsidian/Dan Mac AI Weekly Podcasts',
+                    os.path.join(os.path.expanduser('~'), 'Documents', 'Dan Mac AI Weekly Podcasts')
+                ]
+                
+                # Create a fallback directory in the user's Documents folder
+                fallback_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Dan Mac AI Weekly Podcasts')
+                
+                # Try to find or create a valid output directory
+                obsidian_path = None
+                for path in possible_obsidian_paths:
+                    try:
+                        os.makedirs(path, exist_ok=True)
+                        # Test if we can write to this directory
+                        test_file = os.path.join(path, '.test_write_access')
+                        with open(test_file, 'w') as f:
+                            f.write('test')
+                        os.remove(test_file)
+                        obsidian_path = path
+                        logfire.log("info", "using_directory", {"path": obsidian_path})
+                        print(f"Using directory: {obsidian_path}")
+                        break
+                    except (PermissionError, OSError) as e:
+                        logfire.log("warning", "directory_access_error", {"path": path, "error": str(e)})
+                        print(f"Could not use directory {path}: {e}")
+                
+                # If no valid directory was found, use the fallback
+                if not obsidian_path:
+                    try:
+                        os.makedirs(fallback_path, exist_ok=True)
+                        obsidian_path = fallback_path
+                        logfire.log("info", "using_fallback_directory", {"path": obsidian_path})
+                        print(f"Using fallback directory: {obsidian_path}")
+                    except Exception as e:
+                        # If even the fallback fails, use the current directory
+                        obsidian_path = os.getcwd()
+                        logfire.log("warning", "using_current_directory", {"path": obsidian_path, "reason": str(e)})
+                        print(f"Using current directory as fallback: {obsidian_path}")
                 
                 for i, draft in enumerate(drafts):
                     # Generate title using Gemini
@@ -449,6 +490,8 @@ Here are the episodes:
                             title = f"AI Podcast Weekly Newsletter - Draft {i+1}"
                         else:
                             title = title_response.content.strip()
+                            # Remove any characters that might cause filename issues
+                            title = re.sub(r'[\\/*?:"<>|]', '', title)
                             logfire.log("info", "title_generated", {
                                 "title": title,
                                 "draft_number": i+1,
@@ -476,12 +519,10 @@ Here are the episodes:
                             print(f"Failed to evaluate Draft {i+1}: {evaluation_result.get('error', 'Unknown error')}")
                         
                         # Format filename with evaluation score if available
-                        score_suffix = f" (Score: {evaluation_result.get('evaluation', {}).get('overall_score', 'N/A')}/10)" if evaluation_result["success"] else ""
-                        filename = f"{current_date} {title} - Draft {i+1}{score_suffix}.md"
-                        
-                        # Save to Obsidian vault
-                        obsidian_path = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse/Dan Mac AI Weekly Podcasts'
-                        os.makedirs(obsidian_path, exist_ok=True)
+                        score_suffix = f" (Score {evaluation_result.get('evaluation', {}).get('overall_score', 'N/A')}-10)" if evaluation_result["success"] else ""
+                        # Sanitize filename further
+                        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
+                        filename = f"{current_date} {safe_title} - Draft {i+1}{score_suffix}.md"
                         
                         # Add evaluation results to the draft content if available
                         content_to_save = draft
@@ -502,26 +543,55 @@ Here are the episodes:
 """
                             content_to_save = f"{content_to_save}\n\n{evaluation_text}"
                         
-                        full_path = os.path.join(obsidian_path, filename)
-                        with open(full_path, 'w') as f:
-                            f.write(content_to_save)
+                        try:
+                            full_path = os.path.join(obsidian_path, filename)
+                            with open(full_path, 'w') as f:
+                                f.write(content_to_save)
+                                
+                            logfire.log("info", "newsletter_draft_saved", 
+                                      {"file_path": full_path,
+                                      "file_name": filename,
+                                      "draft_number": i+1,
+                                      "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None})
+                                
+                            print(f"\nNewsletter Draft {i+1} saved to: {full_path}")
                             
-                        logfire.log("info", "newsletter_draft_saved", 
-                                  {"file_path": full_path,
-                                  "file_name": filename,
-                                  "draft_number": i+1,
-                                  "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None})
+                            # Add to results
+                            draft_results.append({
+                                "draft_number": i+1,
+                                "title": title,
+                                "content": draft,
+                                "file_path": full_path,
+                                "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None
+                            })
+                        except Exception as e:
+                            logfire.log("error", "file_save_error", 
+                                      {"file_path": full_path,
+                                      "error": str(e),
+                                      "draft_number": i+1})
+                            print(f"Error saving draft {i+1} to {full_path}: {e}")
                             
-                        print(f"\nNewsletter Draft {i+1} saved to: {full_path}")
-                        
-                        # Add to results
-                        draft_results.append({
-                            "draft_number": i+1,
-                            "title": title,
-                            "content": draft,
-                            "file_path": full_path,
-                            "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None
-                        })
+                            # Try to save to current directory as fallback
+                            try:
+                                fallback_file = os.path.join(os.getcwd(), filename)
+                                with open(fallback_file, 'w') as f:
+                                    f.write(content_to_save)
+                                print(f"Saved draft {i+1} to fallback location: {fallback_file}")
+                                
+                                # Add to results with fallback path
+                                draft_results.append({
+                                    "draft_number": i+1,
+                                    "title": title,
+                                    "content": draft,
+                                    "file_path": fallback_file,
+                                    "evaluation": evaluation_result.get("evaluation", {}) if evaluation_result["success"] else None
+                                })
+                            except Exception as inner_e:
+                                logfire.log("error", "fallback_save_error", 
+                                          {"file_path": fallback_file,
+                                          "error": str(inner_e),
+                                          "draft_number": i+1})
+                                print(f"Error saving draft {i+1} to fallback location: {inner_e}")
                 
                 # Sort drafts by evaluation score if available
                 sorted_drafts = sorted(
@@ -552,7 +622,7 @@ Here are the episodes:
 
 def evaluate_draft(draft_content, draft_number):
     """
-    Evaluate a newsletter draft using Google's Gemini 2 Flash.
+    Evaluate a newsletter draft using OpenAI's GPT-4o.
     
     Args:
         draft_content: The content of the draft to evaluate
@@ -566,41 +636,66 @@ def evaluate_draft(draft_content, draft_number):
         
         # Create the evaluation prompt
         evaluation_prompt = f"""
-Evaluate this newsletter draft and provide a numeric score (1-10) for each of these criteria:
+You are a professional newsletter editor with high standards. Your task is to critically evaluate this newsletter draft and provide a detailed assessment.
 
-1. Insightfulness: Does it provide deep, thoughtful analysis and connections?
-2. Brevity: Is it concise without unnecessary words?
-3. Humanity: Does it feel like it was written by a human with personality?
-4. Conciseness: Is it focused and to the point?
-5. Interestingness: Is it engaging and captivating to read?
+Evaluate this newsletter draft on each of these criteria using a scale of 1-10, where:
+- 1-3 = Poor (significant issues that need major improvement)
+- 4-6 = Average (acceptable but not impressive)
+- 7-8 = Good (above average, well-executed)
+- 9-10 = Excellent (exceptional quality, stands out)
 
-For each criterion, provide:
-- A numeric score (1-10)
-- A brief explanation (max 1 sentence)
+IMPORTANT: Do NOT default to middle scores (4-6) out of politeness. Be critical and discerning. Use the full range of scores based on the actual quality of the draft. It's extremely unlikely that a draft would score exactly 5 on all criteria.
+
+Criteria:
+
+1. Insightfulness (1-10): Does it provide deep, thoughtful analysis and connections between ideas? Does it offer unique perspectives or make readers think differently?
+   - Low scores: Surface-level observations, obvious points
+   - High scores: Profound insights, unexpected connections, thought-provoking analysis
+
+2. Brevity (1-10): Is it concise without unnecessary words? Does it make its points efficiently?
+   - Low scores: Wordy, repetitive, unnecessarily long
+   - High scores: Economical with words, no fluff, gets to the point quickly
+
+3. Humanity (1-10): Does it feel like it was written by a human with personality? Does it connect emotionally?
+   - Low scores: Robotic, formulaic, impersonal
+   - High scores: Warm, relatable, authentic voice, emotionally engaging
+
+4. Conciseness (1-10): Is it focused and to the point? Does it avoid tangents and stay on topic?
+   - Low scores: Rambling, unfocused, includes irrelevant information
+   - High scores: Laser-focused, every sentence serves a purpose, clear structure
+
+5. Interestingness (1-10): Is it engaging and captivating to read? Does it hold attention?
+   - Low scores: Boring, predictable, fails to engage
+   - High scores: Fascinating, compelling, makes readers want to continue
+
+For each criterion:
+1. Carefully analyze the draft's strengths and weaknesses
+2. Assign a specific score that accurately reflects its quality
+3. Provide a brief explanation justifying your score with specific examples from the text
 
 Return your evaluation in this exact JSON format:
 {{
   "insightfulness": {{
     "score": <1-10>,
-    "explanation": "<brief explanation>"
+    "explanation": "<brief explanation with specific examples>"
   }},
   "brevity": {{
     "score": <1-10>,
-    "explanation": "<brief explanation>"
+    "explanation": "<brief explanation with specific examples>"
   }},
   "humanity": {{
     "score": <1-10>,
-    "explanation": "<brief explanation>"
+    "explanation": "<brief explanation with specific examples>"
   }},
   "conciseness": {{
     "score": <1-10>,
-    "explanation": "<brief explanation>"
+    "explanation": "<brief explanation with specific examples>"
   }},
   "interestingness": {{
     "score": <1-10>,
-    "explanation": "<brief explanation>"
+    "explanation": "<brief explanation with specific examples>"
   }},
-  "overall_score": <average of all scores>,
+  "overall_score": <calculated average of all scores, rounded to one decimal place>,
   "summary": "<one sentence overall assessment>"
 }}
 
@@ -609,9 +704,9 @@ Here's the newsletter draft to evaluate:
 {draft_content}
 """
         
-        # Call Gemini 2 Flash for evaluation
+        # Call GPT-4o for evaluation
         evaluation_request = LLMRequest(
-            model="google/gemini-2.0-flash-thinking",
+            model="openai/gpt-4o",
             prompt=evaluation_prompt,
             context_info=f"evaluate_draft_{draft_number}"
         )
