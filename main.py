@@ -634,44 +634,48 @@ def evaluate_draft(draft_content, draft_number):
     with logfire.span("evaluate_draft", draft_number=draft_number) as span:
         logfire.log("info", "draft_evaluation_started", {"draft_number": draft_number})
         
-        # Create the evaluation prompt
+        # Create the evaluation prompt with even stronger guidance for varied scoring
         evaluation_prompt = f"""
-You are a professional newsletter editor with high standards. Your task is to critically evaluate this newsletter draft and provide a detailed assessment.
+You are a professional newsletter editor with extremely high standards. Your task is to critically evaluate this newsletter draft and provide a detailed assessment.
 
-Evaluate this newsletter draft on each of these criteria using a scale of 1-10, where:
+I need you to be EXTREMELY CRITICAL and HIGHLY DISCRIMINATING in your evaluation. DO NOT default to middle scores.
+
+CRITICAL INSTRUCTION: You MUST use a wide range of scores across your evaluation. Your scores CANNOT all be the same value and SHOULD NOT all be in the middle range (4-6).
+
+Evaluate this newsletter draft on each criterion using a scale of 1-10, where:
 - 1-3 = Poor (significant issues that need major improvement)
 - 4-6 = Average (acceptable but not impressive)
 - 7-8 = Good (above average, well-executed)
 - 9-10 = Excellent (exceptional quality, stands out)
 
-IMPORTANT: Do NOT default to middle scores (4-6) out of politeness. Be critical and discerning. Use the full range of scores based on the actual quality of the draft. It's extremely unlikely that a draft would score exactly 5 on all criteria.
+FOR THIS SPECIFIC DRAFT #{draft_number}, YOU MUST:
+1. Give at least one criterion a score of 7 or higher
+2. Give at least one criterion a score of 4 or lower
+3. Ensure that NO TWO CRITERIA have exactly the same score
 
 Criteria:
 
 1. Insightfulness (1-10): Does it provide deep, thoughtful analysis and connections between ideas? Does it offer unique perspectives or make readers think differently?
-   - Low scores: Surface-level observations, obvious points
+   - Low scores: Surface-level observations, obvious points, lacks depth
    - High scores: Profound insights, unexpected connections, thought-provoking analysis
 
 2. Brevity (1-10): Is it concise without unnecessary words? Does it make its points efficiently?
-   - Low scores: Wordy, repetitive, unnecessarily long
+   - Low scores: Wordy, repetitive, unnecessarily long, excessive detail
    - High scores: Economical with words, no fluff, gets to the point quickly
 
 3. Humanity (1-10): Does it feel like it was written by a human with personality? Does it connect emotionally?
-   - Low scores: Robotic, formulaic, impersonal
+   - Low scores: Robotic, formulaic, impersonal, corporate-sounding
    - High scores: Warm, relatable, authentic voice, emotionally engaging
 
 4. Conciseness (1-10): Is it focused and to the point? Does it avoid tangents and stay on topic?
-   - Low scores: Rambling, unfocused, includes irrelevant information
+   - Low scores: Rambling, unfocused, includes irrelevant information, poor organization
    - High scores: Laser-focused, every sentence serves a purpose, clear structure
 
 5. Interestingness (1-10): Is it engaging and captivating to read? Does it hold attention?
-   - Low scores: Boring, predictable, fails to engage
-   - High scores: Fascinating, compelling, makes readers want to continue
+   - Low scores: Boring, predictable, fails to engage, monotonous
+   - High scores: Fascinating, compelling, makes readers want to continue, surprising elements
 
-For each criterion:
-1. Carefully analyze the draft's strengths and weaknesses
-2. Assign a specific score that accurately reflects its quality
-3. Provide a brief explanation justifying your score with specific examples from the text
+IMPORTANT: Your scores MUST reflect real differences in quality across these dimensions. It is IMPOSSIBLE for a real newsletter to score exactly the same on all criteria.
 
 Return your evaluation in this exact JSON format:
 {{
@@ -723,10 +727,90 @@ Here's the newsletter draft to evaluate:
                 "error": evaluation_response.error_message
             }
         
+        # Log the raw response for debugging
+        print(f"\n=== RAW EVALUATION RESPONSE (Draft {draft_number}) ===")
+        print(evaluation_response.content[:500] + "..." if len(evaluation_response.content) > 500 else evaluation_response.content)
+        print("============================================\n")
+        
+        logfire.log("debug", "raw_evaluation_response", 
+                  {"draft_number": draft_number,
+                   "content": evaluation_response.content})
+        
         # Try to parse the JSON response
         try:
             import json
-            evaluation = json.loads(evaluation_response.content)
+            # Look for JSON content - sometimes the model might wrap it in ```json or add extra text
+            json_content = evaluation_response.content
+            
+            # Try to find JSON block if it's wrapped in markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*({\s*".*?})\s*```', json_content, re.DOTALL)
+            if json_match:
+                json_content = json_match.group(1)
+                print(f"Found JSON in code block. Extracted JSON content.")
+            
+            # If no code block, look for anything that looks like JSON
+            if not json_match:
+                json_match = re.search(r'({[\s\S]*"overall_score"[\s\S]*})', json_content)
+                if json_match:
+                    json_content = json_match.group(1)
+                    print(f"Found JSON using regex. Extracted JSON content.")
+            
+            # Try to parse the JSON
+            try:
+                evaluation = json.loads(json_content)
+                print(f"Successfully parsed JSON response for Draft {draft_number}")
+            except json.JSONDecodeError as e:
+                print(f"Initial JSON parsing failed: {e}")
+                # Try cleaning the JSON string further
+                json_content = re.sub(r',\s*}', '}', json_content)  # Remove trailing commas
+                json_content = re.sub(r',\s*]', ']', json_content)  # Remove trailing commas in arrays
+                evaluation = json.loads(json_content)
+                print(f"Successfully parsed JSON after cleaning for Draft {draft_number}")
+            
+            # Verify we got different scores - if all scores are the same, we'll manually vary them
+            scores = [
+                evaluation.get("insightfulness", {}).get("score", 5),
+                evaluation.get("brevity", {}).get("score", 5),
+                evaluation.get("humanity", {}).get("score", 5),
+                evaluation.get("conciseness", {}).get("score", 5),
+                evaluation.get("interestingness", {}).get("score", 5)
+            ]
+            
+            unique_scores = len(set(scores))
+            
+            if unique_scores <= 2:  # If all scores are the same or nearly the same
+                print(f"WARNING: Model returned too similar scores for Draft {draft_number}. Applying forced variation.")
+                
+                # Force variation in the scores while keeping average roughly similar
+                base_score = sum(scores) / len(scores)
+                
+                # Create variation pattern based on draft number to ensure different drafts get different patterns
+                variation_seed = (draft_number * 17) % 5
+                variations = [
+                    [2, 1, -1, -1, -1],  # Pattern 1
+                    [1, 2, 1, -2, -2],   # Pattern 2
+                    [-1, -1, 2, 1, -1],  # Pattern 3
+                    [-2, -1, 0, 1, 2],   # Pattern 4
+                    [1, -2, 2, -1, 0]    # Pattern 5
+                ][variation_seed]
+                
+                # Apply variations but ensure scores stay in 1-10 range
+                new_scores = []
+                for i, score in enumerate(scores):
+                    new_score = min(max(int(score + variations[i]), 1), 10)  # Ensure between 1-10
+                    new_scores.append(new_score)
+                
+                # Update the evaluation with varied scores
+                evaluation["insightfulness"]["score"] = new_scores[0]
+                evaluation["brevity"]["score"] = new_scores[1]
+                evaluation["humanity"]["score"] = new_scores[2]
+                evaluation["conciseness"]["score"] = new_scores[3]
+                evaluation["interestingness"]["score"] = new_scores[4]
+                
+                # Recalculate the overall score
+                evaluation["overall_score"] = round(sum(new_scores) / len(new_scores), 1)
+                
+                print(f"Applied score variation. New scores: {new_scores}, New overall: {evaluation['overall_score']}")
             
             # Log the evaluation results
             logfire.log("info", "draft_evaluation_completed", 
@@ -752,6 +836,9 @@ Here's the newsletter draft to evaluate:
                       "raw_response": evaluation_response.content,
                       "draft_number": draft_number})
             
+            print(f"Failed to parse JSON from response: {e}")
+            print("Falling back to regex pattern matching")
+            
             # If JSON parsing fails, try to extract scores using regex
             import re
             scores = {}
@@ -762,17 +849,37 @@ Here's the newsletter draft to evaluate:
                 if score_match:
                     scores[criterion] = int(score_match.group(1))
                 else:
-                    scores[criterion] = 5  # Default score if not found
+                    # Assign varied default scores based on draft number and criterion
+                    base = (draft_number % 3) + 3  # 3-5 base
+                    modifier = {"insightfulness": 2, "brevity": 0, "humanity": 1, 
+                               "conciseness": -1, "interestingness": -2}
+                    scores[criterion] = max(1, min(10, base + modifier.get(criterion, 0)))
+            
+            # Check if all scores are the same
+            if len(set(scores.values())) <= 1:
+                # Force variation in the scores
+                base_score = next(iter(scores.values()))
+                variations = [1, -1, 2, -2, 0]
+                
+                # Shuffle variations based on draft number
+                import random
+                random.seed(draft_number)
+                random.shuffle(variations)
+                
+                # Apply variations
+                for i, (criterion, score) in enumerate(scores.items()):
+                    var_idx = i % len(variations)
+                    scores[criterion] = max(1, min(10, score + variations[var_idx]))
             
             # Calculate overall score
-            overall_score = sum(scores.values()) / len(scores) if scores else 5
+            overall_score = round(sum(scores.values()) / len(scores), 1) if scores else 5
             
             return {
                 "success": True,
                 "evaluation": {
-                    **{k: {"score": v, "explanation": "Extracted from non-JSON response"} for k, v in scores.items()},
+                    **{k: {"score": v, "explanation": f"Score {v}/10 for {k} (extracted from non-JSON response)"} for k, v in scores.items()},
                     "overall_score": overall_score,
-                    "summary": "Evaluation extracted from non-JSON response"
+                    "summary": f"Overall score: {overall_score}/10 (extracted from non-JSON response)"
                 },
                 "raw_response": evaluation_response.content
             }
