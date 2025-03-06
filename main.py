@@ -6,6 +6,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 import logfire
 from dotenv import load_dotenv
+import re
 
 # Load environment variables from .env file
 load_dotenv()
