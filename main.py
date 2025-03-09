@@ -846,7 +846,7 @@ Here's the newsletter draft to evaluate:
             
             # Try to find scores for each criterion
             for criterion in ["insightfulness", "brevity", "humanity", "conciseness", "interestingness"]:
-                score_match = re.search(f"{criterion}.*?(\d+)[/\d]*", evaluation_response.content, re.IGNORECASE)
+                score_match = re.search(f"{criterion}.*?(\d+)[/\\d]*", evaluation_response.content, re.IGNORECASE)
                 if score_match:
                     scores[criterion] = int(score_match.group(1))
                 else:
