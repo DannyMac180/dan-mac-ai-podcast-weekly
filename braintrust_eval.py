@@ -3,8 +3,8 @@ import json
 import sys
 import re
 import getpass
-from typing import Dict, Any, List
-from braintrust import Eval
+from typing import Dict, Any, List, Union
+from braintrust import Eval, Score
 from main import call_llm, LLMRequest, call_llm_with_models
 from dotenv import load_dotenv
 
@@ -209,7 +209,7 @@ def evaluate_draft(draft_content, draft_number):
         }
 
 # Custom scorer that uses our evaluate_draft function
-def llm_quality_score(input_data: Dict[str, Any], output: str, expected_output: str = None) -> float:
+def llm_quality_score(input_data: Dict[str, Any], output: str, expected_output: str = None) -> Union[Score, float]:
     """
     Custom scorer that evaluates newsletter drafts using our evaluate_draft function.
     
@@ -219,7 +219,7 @@ def llm_quality_score(input_data: Dict[str, Any], output: str, expected_output: 
         expected_output: Optional expected output (not used in this scorer)
         
     Returns:
-        Float score between 0 and 1
+        Braintrust Score object with score and metadata
     """
     # Get draft number from input or default to 1
     draft_number = input_data.get("draft_number", 1)
@@ -228,13 +228,41 @@ def llm_quality_score(input_data: Dict[str, Any], output: str, expected_output: 
     evaluation_result = evaluate_draft(output, draft_number)
     
     if not evaluation_result.get("success", False):
-        return 0.0
+        return Score(
+            name="llm_quality_score",  # Required name parameter
+            score=0.0,
+            metadata={
+                "error": evaluation_result.get("error", "Unknown error during evaluation"),
+                "success": False
+            }
+        )
     
     # Extract the evaluation data
     eval_data = evaluation_result.get("evaluation", {})
     
+    # Get individual scores
+    scores = {
+        "insightfulness": eval_data.get("insightfulness", {}).get("score", 0),
+        "brevity": eval_data.get("brevity", {}).get("score", 0),
+        "humanity": eval_data.get("humanity", {}).get("score", 0),
+        "conciseness": eval_data.get("conciseness", {}).get("score", 0),
+        "interestingness": eval_data.get("interestingness", {}).get("score", 0)
+    }
+    
+    # Get explanations
+    explanations = {
+        "insightfulness": eval_data.get("insightfulness", {}).get("explanation", ""),
+        "brevity": eval_data.get("brevity", {}).get("explanation", ""),
+        "humanity": eval_data.get("humanity", {}).get("explanation", ""),
+        "conciseness": eval_data.get("conciseness", {}).get("explanation", ""),
+        "interestingness": eval_data.get("interestingness", {}).get("explanation", "")
+    }
+    
     # Get overall score (normalized to 0-1 range for Braintrust)
     overall_score = eval_data.get("overall_score", 0) / 10.0
+    
+    # Normalize individual scores to 0-1 range for consistency
+    normalized_scores = {k: v / 10.0 for k, v in scores.items()}
     
     # Print detailed evaluation for reference
     print(f"\nEvaluation for draft {draft_number}:")
@@ -242,13 +270,30 @@ def llm_quality_score(input_data: Dict[str, Any], output: str, expected_output: 
     print(f"Summary: {eval_data.get('summary', 'No summary provided')}")
     print("Individual scores:")
     for criterion in ["insightfulness", "brevity", "humanity", "conciseness", "interestingness"]:
-        score = eval_data.get(criterion, {}).get("score", 0)
-        explanation = eval_data.get(criterion, {}).get("explanation", "No explanation provided")
+        score = scores.get(criterion, 0)
+        explanation = explanations.get(criterion, "No explanation provided")
         print(f"  {criterion.capitalize()}: {score}/10 - {explanation[:100]}...")
     print()
     
-    # Return just the float score for Braintrust
-    return overall_score
+    # Create and return a Braintrust Score object
+    return Score(
+        name="llm_quality_score",  # Required name parameter
+        score=overall_score,
+        metadata={
+            "summary": eval_data.get("summary", "No summary provided"),
+            "insightfulness": scores["insightfulness"],
+            "brevity": scores["brevity"],
+            "humanity": scores["humanity"],
+            "conciseness": scores["conciseness"],
+            "interestingness": scores["interestingness"],
+            "insightfulness_normalized": normalized_scores["insightfulness"],
+            "brevity_normalized": normalized_scores["brevity"],
+            "humanity_normalized": normalized_scores["humanity"],
+            "conciseness_normalized": normalized_scores["conciseness"],
+            "interestingness_normalized": normalized_scores["interestingness"],
+            "draft_number": draft_number
+        }
+    )
 
 # Function to generate a newsletter draft
 def generate_newsletter_draft(input_data: Dict[str, Any]) -> str:
