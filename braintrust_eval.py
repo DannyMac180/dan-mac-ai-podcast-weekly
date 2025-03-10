@@ -373,7 +373,7 @@ def main():
         # Run the evaluation
         print("Starting Braintrust evaluation...")
         results = Eval(
-            "dan-mac-podcast-weekly-podcasts",  # Your Braintrust project name
+            "dan-mac-weekly-podcasts",  # Your Braintrust project name
             data=get_evaluation_dataset,
             task=lambda input_data: generate_newsletter_draft(input_data),
             scores=[llm_quality_score],

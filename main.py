@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import logfire
 from dotenv import load_dotenv
 import re
+from braintrust import init_logger, traced
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +19,9 @@ logfire.configure(
     service_version="0.1.0",
     environment="development"
 )
+
+# Initialize Braintrust logger
+logger = init_logger(project="dan-mac-weekly-podcasts")
 
 # Create counters for tracking LLM usage
 llm_call_counter = logfire.metric_counter("llm_calls_total", 
@@ -45,6 +49,7 @@ class LLMResponse(BaseModel):
     processing_time_ms: Optional[float] = None
 
 # Enhanced version with Pydantic models for structured logging
+@traced
 def call_llm_with_models(request: LLMRequest) -> LLMResponse:
     """
     Call OpenRouter API with structured request and response objects.
@@ -142,6 +147,7 @@ def call_llm_with_models(request: LLMRequest) -> LLMResponse:
             return llm_response
 
 # Legacy compatibility function that uses the new structured version internally
+@traced
 def call_llm(prompt: str, model: str = "google/gemini-2.0-flash-001") -> str:
     """
     Call OpenRouter API with the given prompt and model.
@@ -191,6 +197,13 @@ def extract_information(file_path: str):
             with open(file_path, 'r', encoding='utf-8') as f:
                 file_content = f.read()
             
+            # Extract Source URL from the markdown file
+            source_url = None
+            source_url_match = re.search(r'Source URL: (https?://[^\s\n]+)', file_content)
+            if source_url_match:
+                source_url = source_url_match.group(1)
+                logfire.log("info", "source_url_found", {"source_url": source_url})
+            
             logfire.log("info", "file_read", {"file_size": len(file_content), "file_name": os.path.basename(file_path)})
             
             # First, get the LLM response
@@ -227,6 +240,9 @@ Here is the transcript:
                 # Remove any potential markdown code block markers
                 json_str = llm_response.content.strip().replace('```json', '').replace('```', '').strip()
                 extract = json.loads(json_str)
+                
+                # Add source file path and URL to the extract
+                extract["source_url"] = source_url
                 
                 logfire.log("info", "extraction_success", 
                           {"title": extract.get("title", "Unknown"),
@@ -353,6 +369,10 @@ Structure the newsletter with:
 3. A section on common themes and connections
 4. A conclusion that ties everything together
 
+IMPORTANT: For each podcast episode mentioned, include a citation with a link back to the original podcast episode. 
+Use the Source URL as the link URL and the episode title as the link text. Format these as markdown links: [Episode Title](Source URL).
+If a Source URL is not available, mention that the link is unavailable.
+
 Create {num_drafts} DISTINCT drafts with different styles and approaches. Each draft should have its own unique voice and structure while covering the same content.
 
 Here are the episodes:
@@ -382,7 +402,6 @@ Here are the episodes:
                 
                 # Split the content into separate drafts
                 # We'll look for patterns like "Draft 1:", "Draft 2:", etc.
-                import re
                 draft_pattern = r"(?:Draft\s*(\d+)|Newsletter\s*(\d+))[\s:]*"
                 
                 # Find all draft markers
@@ -841,7 +860,6 @@ Here's the newsletter draft to evaluate:
             print("Falling back to regex pattern matching")
             
             # If JSON parsing fails, try to extract scores using regex
-            import re
             scores = {}
             
             # Try to find scores for each criterion
